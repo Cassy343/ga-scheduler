@@ -1,0 +1,493 @@
+use crate::schedule::{Class, Room, ScheduleInput, Teacher};
+use itertools::Itertools;
+use rand::{thread_rng, Rng};
+use std::cmp;
+use std::collections::HashMap;
+use std::convert::{AsMut, AsRef};
+use std::iter::*;
+use std::mem;
+
+pub struct Settings {
+    pub reproduce_percent: f32,
+    pub elitist_percent: f32,
+    pub immigration_percent: f32,
+    pub crossover_prob: f32,
+    pub mutate_prob: f32,
+}
+
+pub struct Schedule(Vec<Vec<HashMap<Room, (Class, Teacher)>>>);
+
+#[derive(Clone)]
+pub struct Individual {
+    pub map_class_teacher: OwnedChromosome,
+    pub class_ordering: OwnedChromosome,
+    pub class_day_selections: Vec<OwnedChromosome>,
+    pub buffer_ordering: OwnedChromosome,
+    pub buffer_day_selections: Vec<OwnedChromosome>,
+    last_loss: f32,
+    needs_loss_update: bool,
+}
+
+impl Individual {
+    pub fn new(input: &ScheduleInput) -> Self {
+        Individual {
+            map_class_teacher: Chromosome::new(input.classes.len()),
+            class_ordering: Chromosome::new(input.classes.len()),
+            class_day_selections: vec![
+                Chromosome::new(input.days_in_week as usize);
+                input.classes.len()
+            ],
+            buffer_ordering: Chromosome::new(input.unused_periods as usize),
+            buffer_day_selections: vec![
+                Chromosome::new(input.days_in_week as usize);
+                input.unused_periods as usize
+            ],
+            last_loss: 0.0,
+            needs_loss_update: true,
+        }
+    }
+
+    pub fn evaluate(&mut self, input: &ScheduleInput) -> f32 {
+        if !self.needs_loss_update {
+            return self.last_loss;
+        } else {
+            self.needs_loss_update = false;
+        }
+
+        let mut rooms_mut = input
+            .rooms
+            .iter()
+            .flat_map(|room| repeat(room).take(input.periods_in_day as usize))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut classes_with_teachers = self
+            .map_class_teacher
+            .as_mapping()
+            .map(|(class_index, teacher_index)| {
+                (
+                    &input.classes[class_index],
+                    &input.teachers[(input.teachers.len() * teacher_index) / input.classes.len()],
+                )
+            })
+            .collect::<Vec<_>>();
+        println!("{:?}", classes_with_teachers);
+        println!("{:?}", rooms_mut);
+
+        let mut class_anchor: usize = 0;
+        let mut room_anchor: usize = 0;
+        while class_anchor < input.classes.len() && room_anchor < rooms_mut.len() {
+            let mut ct_buffer = [0usize; 8];
+            ct_buffer[0] = class_anchor;
+            let mut class_index = class_anchor;
+            let mut room_index = room_anchor + 1;
+
+            while room_index < rooms_mut.len()
+                && rooms_mut[room_index].capacity >= input.classes[class_anchor].size
+            {
+                room_index += 1;
+            }
+
+            let min_capacity = rooms_mut
+                .get(room_index)
+                .map(|room| room.capacity)
+                .unwrap_or(0);
+            while class_index < input.classes.len()
+                && min_capacity <= input.classes[class_index].size
+            {
+                class_index += 1;
+            }
+
+            println!(
+                "{} - {}; {} - {}",
+                class_anchor, class_index, room_anchor, room_index
+            );
+
+            let mut i = 1;
+            let mut last_mpw = classes_with_teachers[class_anchor].0.meetings_per_week;
+            for (index, class_and_teacher) in classes_with_teachers[class_anchor..class_index]
+                .iter()
+                .enumerate()
+            {
+                if class_and_teacher.0.meetings_per_week != last_mpw {
+                    last_mpw = class_and_teacher.0.meetings_per_week;
+                    ct_buffer[i] = class_anchor + index;
+                    i += 1;
+                }
+            }
+            ct_buffer[i] = class_index;
+
+            println!("{:?}", ct_buffer);
+
+            for (class_set, window) in ct_buffer[0..=i]
+                .windows(2)
+                .map(|window| (&classes_with_teachers[window[0]..window[1]], window))
+            {
+                let required_slots = class_set[0].0.meetings_per_week as usize;
+                let available_rooms = rooms_mut[room_anchor..room_index]
+                    .iter_mut()
+                    .filter(|room| room.days_available.len() >= required_slots)
+                    .collect::<Vec<_>>();
+
+                let class_chromosome = self.class_ordering.substring(window[0], window[1]);
+                let buffer_chromosome = if class_set.len() < available_rooms.len() {
+                    self.buffer_ordering
+                        .substring(0, available_rooms.len() - class_set.len())
+                } else {
+                    self.buffer_ordering.substring(0, 0)
+                };
+
+                for (ct_index, room_index) in
+                    Chromosome::joint_mapping(&class_chromosome, &buffer_chromosome)
+                        .filter(|&(ct_index, _)| ct_index < class_set.len())
+                {
+                    let room_index = room_index % available_rooms.len();
+                    println!(
+                        "{:?}, {:?}, {}",
+                        classes_with_teachers[class_anchor + ct_index].0.name,
+                        available_rooms[room_index].name,
+                        room_index % input.periods_in_day as usize
+                    );
+                }
+            }
+
+            class_anchor = class_index;
+            room_anchor = room_index;
+        }
+
+        self.last_loss = classes_with_teachers
+            .iter()
+            .map(|(class, teacher)| {
+                teacher
+                    .preferences
+                    .iter()
+                    .position(|preference| class.name.contains(preference))
+                    .unwrap_or(0) as f32
+            })
+            .sum::<f32>();
+        self.last_loss
+    }
+
+    pub fn recombine_all<R: Recombinator>(
+        first: &mut Self,
+        second: &mut Self,
+        crossover_probability: f32,
+        recombinator: &R,
+        rng: &mut impl Rng,
+    ) {
+        first.needs_loss_update = true;
+        second.needs_loss_update = true;
+
+        if rng.gen::<f32>() < crossover_probability {
+            recombinator.recombine(
+                &mut first.map_class_teacher,
+                &mut second.map_class_teacher,
+                rng,
+            );
+        }
+    }
+
+    pub fn mutate_all(&mut self, probability: f32, rng: &mut impl Rng) {
+        if rng.gen::<f32>() < probability {
+            self.map_class_teacher
+                .point_mutation(rng.gen::<usize>() % self.map_class_teacher.len(), rng);
+            self.needs_loss_update = true;
+        }
+    }
+}
+
+#[inline]
+pub fn slice_crossover<T>(first: &mut [T], second: &mut [T], start: usize, end: usize) {
+    (&mut first[start..end]).swap_with_slice(&mut second[start..end]);
+}
+
+#[derive(Clone)]
+pub struct Chromosome<T>(T);
+
+pub type OwnedChromosome = Chromosome<Vec<f32>>;
+
+impl Chromosome<Vec<f32>> {
+    pub fn new(len: usize) -> Self {
+        Chromosome((0..len).map(|_| thread_rng().gen()).collect())
+    }
+}
+
+impl<T: AsRef<[f32]>> Chromosome<T> {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.as_ref().len()
+    }
+
+    pub fn substring(&self, start: usize, end: usize) -> Chromosome<&'_ [f32]> {
+        Chromosome(&self.0.as_ref()[start..end])
+    }
+
+    pub fn as_mapping(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        Self::mapping_internal(self.0.as_ref().iter())
+    }
+
+    pub fn joint_mapping<'a, 'b: 'a>(
+        first: &'a Self,
+        second: &'b Self,
+    ) -> impl Iterator<Item = (usize, usize)> + 'a {
+        Self::mapping_internal(first.as_ref().iter().chain(second.as_ref()))
+    }
+
+    fn mapping_internal<'a>(
+        iter: impl Iterator<Item = &'a f32>,
+    ) -> impl Iterator<Item = (usize, usize)> {
+        iter.copied()
+            .enumerate()
+            .sorted_by(|(_, key1), (_, key2)| {
+                key1.partial_cmp(key2).unwrap_or(cmp::Ordering::Equal)
+            })
+            .enumerate()
+            .map(|(original_index, (mapped_index, _))| (original_index, mapped_index))
+    }
+}
+
+impl<T: AsMut<[f32]>> Chromosome<T> {
+    pub fn point_mutation(&mut self, index: usize, rng: &mut impl Rng) {
+        self.0.as_mut()[index] = rng.gen();
+    }
+}
+
+impl<T: AsRef<[f32]>> AsRef<[f32]> for Chromosome<T> {
+    fn as_ref(&self) -> &[f32] {
+        self.0.as_ref()
+    }
+}
+
+impl<T: AsMut<[f32]>> AsMut<[f32]> for Chromosome<T> {
+    fn as_mut(&mut self) -> &mut [f32] {
+        self.0.as_mut()
+    }
+}
+
+pub trait Recombinator {
+    fn recombine<T>(
+        &self,
+        first: &mut Chromosome<T>,
+        second: &mut Chromosome<T>,
+        rng: &mut impl Rng,
+    ) where
+        T: AsRef<[f32]> + AsMut<[f32]>;
+}
+
+pub struct KPoint {
+    count: f32,
+}
+
+impl KPoint {
+    pub fn new(count: usize) -> Self {
+        assert!(count > 0);
+
+        KPoint {
+            count: (count - 1) as f32,
+        }
+    }
+
+    fn single_point<T>(first: &mut Chromosome<T>, second: &mut Chromosome<T>, rng: &mut impl Rng)
+    where
+        T: AsRef<[f32]> + AsMut<[f32]>,
+    {
+        let cut = (rng.gen::<f32>() * first.len() as f32) as usize;
+        let len = first.len();
+        slice_crossover(first.as_mut(), second.as_mut(), cut, len);
+    }
+}
+
+impl Recombinator for KPoint {
+    fn recombine<T>(
+        &self,
+        first: &mut Chromosome<T>,
+        second: &mut Chromosome<T>,
+        rng: &mut impl Rng,
+    ) where
+        T: AsRef<[f32]> + AsMut<[f32]>,
+    {
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "Cannot recombine chromosomes of different lengths"
+        );
+
+        if self.count == 0.0 {
+            Self::single_point(first, second, rng);
+            return;
+        }
+
+        let step = (first.len() as f32) / (self.count + 1.0);
+        let mut i = 0.0f32;
+        let mut start: f32;
+        let mut end = rng.gen::<f32>() * step;
+        while i < self.count {
+            i += 1.0;
+            start = end;
+            end = step * (rng.gen::<f32>() + i);
+            slice_crossover(
+                first.as_mut(),
+                second.as_mut(),
+                start as usize,
+                end.round() as usize,
+            );
+        }
+    }
+}
+
+pub struct Uniform {
+    weight: f32,
+}
+
+impl Uniform {
+    pub fn new() -> Self {
+        Uniform { weight: 0.5 }
+    }
+
+    pub fn weighted(weight: f32) -> Self {
+        Uniform { weight }
+    }
+}
+
+impl Recombinator for Uniform {
+    fn recombine<T>(
+        &self,
+        first: &mut Chromosome<T>,
+        second: &mut Chromosome<T>,
+        rng: &mut impl Rng,
+    ) where
+        T: AsRef<[f32]> + AsMut<[f32]>,
+    {
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "Cannot recombine chromosomes of different lengths"
+        );
+
+        for i in 0..first.len() {
+            if rng.gen::<f32>() < self.weight {
+                mem::swap(&mut first.as_mut()[i], &mut second.as_mut()[i]);
+            }
+        }
+    }
+}
+
+pub struct RouletteWheelSelection {
+    input: ScheduleInput,
+    loss_buffer: Vec<f32>,
+}
+
+impl RouletteWheelSelection {
+    pub fn new(mut input: ScheduleInput) -> Self {
+        input.update();
+
+        RouletteWheelSelection {
+            input,
+            loss_buffer: Vec::new(),
+        }
+    }
+
+    pub fn evolve<R>(
+        &mut self,
+        settings: &Settings,
+        population: &mut [Individual],
+        dest_population: &mut Vec<Individual>,
+        recombinator: &R,
+    ) -> f32
+    where
+        R: Recombinator,
+    {
+        let mut rng = thread_rng();
+        dest_population.clear();
+
+        // Compute the loss vector
+        let n = population.len();
+        self.loss_buffer.resize_with(n, || 0.0);
+        let mut loss_sum: f32 = 0.0;
+        let mut min_loss = f32::MAX;
+        for i in 0..n {
+            let loss = population[i].evaluate(&self.input);
+            self.loss_buffer[i] = loss;
+            loss_sum += loss;
+
+            if loss < min_loss {
+                min_loss = loss;
+            }
+        }
+        self.loss_buffer
+            .iter_mut()
+            .for_each(|loss| *loss /= loss_sum);
+        self.loss_buffer
+            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(cmp::Ordering::Equal));
+        population.sort_by(|a, b| {
+            a.last_loss
+                .partial_cmp(&b.last_loss)
+                .unwrap_or(cmp::Ordering::Equal)
+        });
+
+        // Copy elites
+        let elite_count = (settings.elitist_percent * population.len() as f32) as usize;
+        (0..elite_count)
+            .map(|index| population[index].clone())
+            .for_each(|elite| dest_population.push(elite));
+
+        // Add immigrants
+        let immigrant_count = (settings.immigration_percent * population.len() as f32) as usize;
+        for _ in 0..immigrant_count {
+            dest_population.push(Individual::new(&self.input));
+        }
+
+        // Generate offspring
+        while dest_population.len() < population.len() {
+            // Get the two parents
+            let mut selections = [0usize; 2];
+            'selector: for i in 0..2 {
+                let mut random = rng.gen::<f32>();
+                for j in 0..n {
+                    if random < self.loss_buffer[j] && (i == 0 || selections[0] != j) {
+                        selections[i] = j;
+                        continue 'selector;
+                    }
+
+                    random -= self.loss_buffer[j];
+                }
+
+                selections[i] = n - 1;
+            }
+
+            // Compute the child chromosomes
+            let mut first = population[selections[0]].clone();
+            let mut second = population[selections[1]].clone();
+            Individual::recombine_all(
+                &mut first,
+                &mut second,
+                settings.crossover_prob,
+                recombinator,
+                &mut rng,
+            );
+            first.mutate_all(settings.mutate_prob, &mut rng);
+            second.mutate_all(settings.mutate_prob, &mut rng);
+
+            // Update minimum loss value
+            let loss = first.evaluate(&self.input);
+            if loss < min_loss {
+                min_loss = loss;
+            }
+            let loss = second.evaluate(&self.input);
+            if loss < min_loss {
+                min_loss = loss;
+            }
+
+            // Add them to the population
+            dest_population.push(first);
+
+            if dest_population.len() < population.len() {
+                dest_population.push(second);
+            } else {
+                break;
+            }
+        }
+
+        min_loss
+    }
+}

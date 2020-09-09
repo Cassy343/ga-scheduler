@@ -1,0 +1,30 @@
+5
+8
+
+// Classes
+8
+Algebra I:18:4
+Algebra IIB:17:4
+Algebra II:21:4
+Algebra IIH:21:4
+Pre-Calculus:19:4
+AP Calculus AB (1):22:4
+AP Calculus AB (2):20:4
+AP Calculus BC:16:4
+
+// Teachers
+3
+Kelly Katz
+- Algebra
+Collin Hinde
+- Algebra II
+- AP Calculus
+Karl Mathieu
+- AP Calculus BC
+- Algebra IIB
+
+// Rooms
+3
+C115: 20
+C108: 22
+C119: 18
