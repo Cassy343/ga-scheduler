@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::convert::Infallible;
 use std::fmt::{self, Debug, Formatter};
 use std::str::FromStr;
 
@@ -10,7 +9,7 @@ pub struct ScheduleInput {
     pub classes: Vec<Class>,
     pub teachers: Vec<Teacher>,
     pub rooms: Vec<Room>,
-    pub unused_periods: u32,
+    pub unused_periods: usize,
 }
 
 impl ScheduleInput {
@@ -32,17 +31,7 @@ impl ScheduleInput {
         });
         self.rooms.sort_by(|a, b| b.capacity.cmp(&a.capacity));
 
-        let total = self
-            .rooms
-            .iter()
-            .map(|room| room.days_available.len() as u32 * self.periods_in_day)
-            .sum::<u32>();
-        let used = self
-            .classes
-            .iter()
-            .map(|class| class.meetings_per_week)
-            .sum::<u32>();
-        self.unused_periods = total - used;
+        self.unused_periods = self.periods_in_day as usize * self.rooms.len() - self.classes.len();
     }
 }
 
@@ -101,22 +90,46 @@ impl FromStr for Class {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Teacher {
     pub name: String,
-    pub preferences: Vec<String>,
+    pub class_preferences: Vec<String>,
+    pub period_preferences: Vec<u32>,
 }
 
 impl Debug for Teacher {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {:?}", self.name, self.preferences)
+        write!(f, "{} {:?}", self.name, self.class_preferences)
     }
 }
 
 impl FromStr for Teacher {
-    type Err = Infallible;
+    type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut split = s.split(":");
+
+        let name = match split.next() {
+            Some(name) => name.trim().to_owned(),
+            None => return Err("expected teacher name"),
+        };
+
+        let period_preferences = match split.next() {
+            Some(periods) => {
+                let mut period_preferences = Vec::new();
+                for period in periods.split(',').map(|s| {
+                    s.trim()
+                        .parse::<u32>()
+                        .map_err(|_| "failed to parse perferred period")
+                }) {
+                    period_preferences.push(period?);
+                }
+                period_preferences
+            }
+            None => Vec::new(),
+        };
+
         Ok(Teacher {
-            name: s.to_owned(),
-            preferences: Vec::new(),
+            name,
+            class_preferences: Vec::new(),
+            period_preferences,
         })
     }
 }

@@ -1,3 +1,5 @@
+#![feature(drain_filter)]
+
 mod ga;
 mod schedule;
 
@@ -14,9 +16,16 @@ const SETTINGS: Settings = Settings {
     reproduce_percent: 0.7,
     elitist_percent: 0.2,
     immigration_percent: 0.1,
-    crossover_prob: 1.0,
     mutate_prob: 0.01,
 };
+
+macro_rules! time {
+    ($($x:tt)*) => {{
+        let __start = std::time::SystemTime::now();
+        $($x)*
+        println!("Time elapsed: {} μs", __start.elapsed().unwrap().as_micros());
+    }};
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Open input.txt for the test cases
@@ -56,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let preference = lines.next().unwrap().unwrap().trim()[1..].trim().to_owned();
-            teacher.preferences.push(preference);
+            teacher.class_preferences.push(preference);
         }
 
         input.teachers.push(teacher);
@@ -86,10 +95,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     input.update();
     let mut population = Vec::with_capacity(POPULATION_SIZE);
     population.resize_with(population.capacity(), || Individual::new(&input));
-    population[0].evaluate(&input);
-    let mut aux_population = population.clone();
-    let recombinator = Uniform::weighted(0.3);
+
+    //for indv in population.iter_mut() {
+    //    println!("{}", indv.evaluate_loss(&input));
+    //}
+
+    let mut dest_population = population.clone();
+    let recombinator = KPoint::new(1);
     let mut selector = RouletteWheelSelection::new(input);
+
+    for _ in 0..1000 {
+        let min_loss = selector.evolve(&SETTINGS, &mut population, &mut dest_population, &recombinator);
+        println!("{}", min_loss);
+        population = dest_population.clone();
+    }
 
     Ok(())
 }

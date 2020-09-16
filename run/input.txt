@@ -2,29 +2,96 @@
 8
 
 // Classes
-8
-Algebra I:18:4
-Algebra IIB:17:4
-Algebra II:21:4
-Algebra IIH:21:4
-Pre-Calculus:19:4
+40
+Algebra I (1):18:4
+Algebra I (2):19:4
+Algebra I (3):20:4
+Algebra I (4):21:4
+Geometry B:20:4
+Geometry (1):19:4
+Geometry (2):17:4
+Geometry (3):22:4
+Geometry (4):21:4
+Algebra IIB (1):17:4
+Algebra IIB (2):18:4
+Algebra II (1):21:4
+Algebra II (2):20:4
+Algebra II (3):19:4
+Algebra IIH (1):21:4
+Algebra IIH (2):20:4
+Algebra III:16:4
+Pre-Calculus Essentials:19:4
+Pre-Calculus (1):19:4
+Pre-Calculus (2):22:4
+Pre-Calculus (3):21:4
+Pre-Calculus H (1):20:4
+Pre-Calculus H (2):21:4
+Calculus (1):19:4
+Calculus (2):18:4
 AP Calculus AB (1):22:4
 AP Calculus AB (2):20:4
-AP Calculus BC:16:4
+AP Calculus AB (3):21:4
+AP Calculus AB (4):19:4
+AP Calculus AB (5):20:4
+AP Calculus BC (1):16:4
+AP Calculus BC (2):20:4
+Advanced Topics:15:4
+Statistics (1):19:4
+Statistics (2):17:4
+AP Statistics (1):20:4
+AP Statistics (2):21:4
+AP Statistics (3):22:4
+AP Statistics (4):20:4
+AP Statistics (5):19:4
 
 // Teachers
-3
-Kelly Katz
+11
+Kelly Katz: 3, 4, 5, 6, 7, 8
 - Algebra
-Collin Hinde
+- Pre-Calculus
+Robert Tarchinski: 3, 4, 5, 6, 7
+- Algebra
+- Geometry B
+Harrison Hwang: 1, 2, 3, 4, 5, 6
+- Algebra
+- Geometry
+Gail Chun: 3, 4, 5
 - Algebra II
-- AP Calculus
-Karl Mathieu
+- Algebra III
+David Cohen: 4, 5, 6, 7, 8
+- Calculus
+- Pre-Calculus
+Colin Hinde: 1, 2, 3, 6, 7, 8
+- Algebra IIH
+- Pre-Calculus H
+- AP Calculus AB
+- Advanced Topics
+William Speer: 1, 2, 3, 4, 5
+- Pre-Calculus
+- AP Calculus AB
+James Ladd: 5, 6, 7, 8
+- Pre-Calculus H
+- AP Calculus AB
+Karl Mathieu: 1, 2, 3, 4, 5, 6, 7
 - AP Calculus BC
 - Algebra IIB
+Hannah Robinson: 1, 2, 3, 6, 7, 8
+- Statistics
+- AP Statistics
+Christopher Schotten
+- Statistics
+- AP Statistics
 
 // Rooms
-3
-C115: 20
-C108: 22
-C119: 18
+11
+C007: 22
+C008: 20
+C009: 24
+C114: 19
+C115: 19
+C117: 22
+C118: 22
+C119: 21
+C120: 21
+GC45: 23
+GC46: 23

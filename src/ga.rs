@@ -4,6 +4,7 @@ use rand::{thread_rng, Rng};
 use std::cmp;
 use std::collections::HashMap;
 use std::convert::{AsMut, AsRef};
+use std::fmt::{self, Display, Formatter};
 use std::iter::*;
 use std::mem;
 
@@ -11,11 +12,53 @@ pub struct Settings {
     pub reproduce_percent: f32,
     pub elitist_percent: f32,
     pub immigration_percent: f32,
-    pub crossover_prob: f32,
     pub mutate_prob: f32,
 }
 
 pub struct Schedule(Vec<Vec<HashMap<Room, (Class, Teacher)>>>);
+
+impl Schedule {
+    pub fn new(input: &ScheduleInput) -> Self {
+        Schedule(vec![
+            vec![HashMap::new(); input.periods_in_day as usize];
+            input.days_in_week as usize
+        ])
+    }
+
+    pub fn get(&self, day: usize, period: usize) -> &HashMap<Room, (Class, Teacher)> {
+        &self.0[day - 1][period - 1]
+    }
+
+    pub fn add(&mut self, day: usize, period: usize, room: Room, class: Class, teacher: Teacher) {
+        self.0[day - 1][period - 1].insert(room, (class, teacher));
+    }
+}
+
+impl Display for Schedule {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut flag = false;
+        for (day, periods) in self.0.iter().enumerate() {
+            write!(f, "{}Day: {}", if flag { "\n" } else { "" }, day + 1)?;
+            flag = true;
+            for (period, classes) in periods.iter().enumerate() {
+                write!(
+                    f,
+                    "\n#{}: {}",
+                    period + 1,
+                    classes
+                        .iter()
+                        .map(|(room, (class, teacher))| format!(
+                            "{}:{} @{}",
+                            class.name, teacher.name, room.name
+                        ))
+                        .join(", ")
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct Individual {
@@ -23,45 +66,42 @@ pub struct Individual {
     pub class_ordering: OwnedChromosome,
     pub class_day_selections: Vec<OwnedChromosome>,
     pub buffer_ordering: OwnedChromosome,
-    pub buffer_day_selections: Vec<OwnedChromosome>,
     last_loss: f32,
     needs_loss_update: bool,
 }
 
 impl Individual {
     pub fn new(input: &ScheduleInput) -> Self {
+        let mut class_day_selections = Vec::with_capacity(input.classes.len());
+        class_day_selections.resize_with(class_day_selections.capacity(), || {
+            Chromosome::new(input.days_in_week as usize)
+        });
+
         Individual {
             map_class_teacher: Chromosome::new(input.classes.len()),
             class_ordering: Chromosome::new(input.classes.len()),
-            class_day_selections: vec![
-                Chromosome::new(input.days_in_week as usize);
-                input.classes.len()
-            ],
-            buffer_ordering: Chromosome::new(input.unused_periods as usize),
-            buffer_day_selections: vec![
-                Chromosome::new(input.days_in_week as usize);
-                input.unused_periods as usize
-            ],
+            class_day_selections,
+            buffer_ordering: Chromosome::new(input.unused_periods),
             last_loss: 0.0,
             needs_loss_update: true,
         }
     }
 
-    pub fn evaluate(&mut self, input: &ScheduleInput) -> f32 {
+    pub fn evaluate_loss(&mut self, input: &ScheduleInput) -> f32 {
         if !self.needs_loss_update {
-            return self.last_loss;
+            self.last_loss
         } else {
-            self.needs_loss_update = false;
+            self.evaluate(input).1
         }
+    }
 
-        let mut rooms_mut = input
-            .rooms
-            .iter()
-            .flat_map(|room| repeat(room).take(input.periods_in_day as usize))
-            .cloned()
-            .collect::<Vec<_>>();
+    pub fn evaluate(&mut self, input: &ScheduleInput) -> (Schedule, f32) {
+        let mut schedule = Schedule::new(input);
 
-        let mut classes_with_teachers = self
+        let period_count = input.periods_in_day as usize;
+        let mut day_buffer: Vec<u32> = Vec::with_capacity(input.days_in_week as usize);
+
+        let classes_with_teachers = self
             .map_class_teacher
             .as_mapping()
             .map(|(class_index, teacher_index)| {
@@ -71,8 +111,13 @@ impl Individual {
                 )
             })
             .collect::<Vec<_>>();
-        println!("{:?}", classes_with_teachers);
-        println!("{:?}", rooms_mut);
+
+        let mut rooms_mut = input
+            .rooms
+            .iter()
+            .flat_map(|room| repeat(room).take(input.periods_in_day as usize))
+            .cloned()
+            .collect::<Vec<_>>();
 
         let mut class_anchor: usize = 0;
         let mut room_anchor: usize = 0;
@@ -98,11 +143,6 @@ impl Individual {
                 class_index += 1;
             }
 
-            println!(
-                "{} - {}; {} - {}",
-                class_anchor, class_index, room_anchor, room_index
-            );
-
             let mut i = 1;
             let mut last_mpw = classes_with_teachers[class_anchor].0.meetings_per_week;
             for (index, class_and_teacher) in classes_with_teachers[class_anchor..class_index]
@@ -117,17 +157,20 @@ impl Individual {
             }
             ct_buffer[i] = class_index;
 
-            println!("{:?}", ct_buffer);
-
             for (class_set, window) in ct_buffer[0..=i]
                 .windows(2)
                 .map(|window| (&classes_with_teachers[window[0]..window[1]], window))
             {
                 let required_slots = class_set[0].0.meetings_per_week as usize;
-                let available_rooms = rooms_mut[room_anchor..room_index]
+                let mut available_rooms: Vec<Option<(usize, &mut Room)>> = rooms_mut
+                    [room_anchor..room_index]
                     .iter_mut()
-                    .filter(|room| room.days_available.len() >= required_slots)
+                    .enumerate()
+                    .map(|(index, room)| ((index + room_anchor) % period_count + 1, room))
+                    .filter(|(_, room)| room.days_available.len() >= required_slots)
+                    .map(|x| Some(x))
                     .collect::<Vec<_>>();
+                let mut room_buffer = Vec::new();
 
                 let class_chromosome = self.class_ordering.substring(window[0], window[1]);
                 let buffer_chromosome = if class_set.len() < available_rooms.len() {
@@ -137,17 +180,49 @@ impl Individual {
                     self.buffer_ordering.substring(0, 0)
                 };
 
-                for (ct_index, room_index) in
+                for (_, room_index) in
                     Chromosome::joint_mapping(&class_chromosome, &buffer_chromosome)
-                        .filter(|&(ct_index, _)| ct_index < class_set.len())
+                        .take(class_set.len())
                 {
-                    let room_index = room_index % available_rooms.len();
-                    println!(
-                        "{:?}, {:?}, {}",
-                        classes_with_teachers[class_anchor + ct_index].0.name,
-                        available_rooms[room_index].name,
-                        room_index % input.periods_in_day as usize
-                    );
+                    room_buffer.push(available_rooms[room_index].take().unwrap());
+                }
+
+                'class_assignment: for (index, &(class, teacher)) in class_set.iter().enumerate() {
+                    for (period, room) in room_buffer.iter_mut() {
+                        for (_, day_index) in self.class_day_selections[window[0] + index]
+                            .substring(0, room.days_available.len())
+                            .as_mapping()
+                        {
+                            day_buffer.push(room.days_available[day_index])
+                        }
+
+                        day_buffer.drain_filter(|&mut day| {
+                            schedule
+                                .get(day as usize, *period)
+                                .values()
+                                .any(|(_, Teacher { name, .. })| name == &teacher.name)
+                        });
+
+                        if day_buffer.len() >= required_slots {
+                            for day in day_buffer.iter().cloned().take(required_slots) {
+                                schedule.add(
+                                    day as usize,
+                                    *period,
+                                    room.clone(),
+                                    class.clone(),
+                                    teacher.clone(),
+                                );
+                                let idx =
+                                    room.days_available.iter().position(|x| *x == day).unwrap();
+                                room.days_available.remove(idx);
+                            }
+
+                            day_buffer.clear();
+                            continue 'class_assignment;
+                        }
+
+                        day_buffer.clear();
+                    }
                 }
             }
 
@@ -155,43 +230,93 @@ impl Individual {
             room_anchor = room_index;
         }
 
-        self.last_loss = classes_with_teachers
+        let class_preference_satisfaction = classes_with_teachers
             .iter()
             .map(|(class, teacher)| {
                 teacher
-                    .preferences
+                    .class_preferences
                     .iter()
-                    .position(|preference| class.name.contains(preference))
-                    .unwrap_or(0) as f32
+                    .position(|preference| class.name.starts_with(preference))
+                    .unwrap_or(teacher.class_preferences.len()) as f32
             })
-            .sum::<f32>();
-        self.last_loss
+            .sum::<f32>()
+            / classes_with_teachers.len() as f32;
+
+        let total_class_count = input
+            .classes
+            .iter()
+            .map(|class| class.meetings_per_week)
+            .sum::<u32>() as f32;
+        let period_satisfaction = schedule
+            .0
+            .iter()
+            .flat_map(|periods| periods.iter().enumerate())
+            .map(|(period, classes)| {
+                classes
+                    .iter()
+                    .map(|(_, (_, teacher))| {
+                        if teacher.period_preferences.contains(&(period as u32 + 1))
+                            || teacher.period_preferences.is_empty()
+                        {
+                            0.0
+                        } else {
+                            1.0
+                        }
+                    })
+                    .sum::<f32>()
+            })
+            .sum::<f32>()
+            / total_class_count;
+
+        self.last_loss = period_satisfaction;
+
+        self.needs_loss_update = false;
+        (schedule, self.last_loss)
     }
 
     pub fn recombine_all<R: Recombinator>(
         first: &mut Self,
         second: &mut Self,
-        crossover_probability: f32,
         recombinator: &R,
         rng: &mut impl Rng,
     ) {
         first.needs_loss_update = true;
         second.needs_loss_update = true;
 
-        if rng.gen::<f32>() < crossover_probability {
-            recombinator.recombine(
-                &mut first.map_class_teacher,
-                &mut second.map_class_teacher,
-                rng,
-            );
+        recombinator.recombine(
+            &mut first.map_class_teacher,
+            &mut second.map_class_teacher,
+            rng,
+        );
+
+        recombinator.recombine(&mut first.class_ordering, &mut second.class_ordering, rng);
+        recombinator.recombine(&mut first.buffer_ordering, &mut second.buffer_ordering, rng);
+
+        for (first_day_selection, second_day_selection) in first
+            .class_day_selections
+            .iter_mut()
+            .zip(second.class_day_selections.iter_mut())
+        {
+            recombinator.recombine(first_day_selection, second_day_selection, rng);
         }
     }
 
     pub fn mutate_all(&mut self, probability: f32, rng: &mut impl Rng) {
-        if rng.gen::<f32>() < probability {
-            self.map_class_teacher
-                .point_mutation(rng.gen::<usize>() % self.map_class_teacher.len(), rng);
-            self.needs_loss_update = true;
+        macro_rules! mutate {
+            ($chromo:expr) => {
+                if rng.gen::<f32>() < probability {
+                    $chromo.point_mutation(rng.gen::<usize>() % $chromo.len(), rng);
+                    self.needs_loss_update = true;
+                }
+            };
+        }
+
+        mutate!(self.map_class_teacher);
+        mutate!(self.class_ordering);
+        mutate!(self.buffer_ordering);
+
+        for day_selection in self.class_day_selections.iter_mut() {
+            mutate!(day_selection);
         }
     }
 }
@@ -201,7 +326,7 @@ pub fn slice_crossover<T>(first: &mut [T], second: &mut [T], start: usize, end: 
     (&mut first[start..end]).swap_with_slice(&mut second[start..end]);
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Chromosome<T>(T);
 
 pub type OwnedChromosome = Chromosome<Vec<f32>>;
@@ -406,7 +531,7 @@ impl RouletteWheelSelection {
         let mut loss_sum: f32 = 0.0;
         let mut min_loss = f32::MAX;
         for i in 0..n {
-            let loss = population[i].evaluate(&self.input);
+            let loss = population[i].evaluate_loss(&self.input);
             self.loss_buffer[i] = loss;
             loss_sum += loss;
 
@@ -458,22 +583,16 @@ impl RouletteWheelSelection {
             // Compute the child chromosomes
             let mut first = population[selections[0]].clone();
             let mut second = population[selections[1]].clone();
-            Individual::recombine_all(
-                &mut first,
-                &mut second,
-                settings.crossover_prob,
-                recombinator,
-                &mut rng,
-            );
+            Individual::recombine_all(&mut first, &mut second, recombinator, &mut rng);
             first.mutate_all(settings.mutate_prob, &mut rng);
             second.mutate_all(settings.mutate_prob, &mut rng);
 
             // Update minimum loss value
-            let loss = first.evaluate(&self.input);
+            let loss = first.evaluate_loss(&self.input);
             if loss < min_loss {
                 min_loss = loss;
             }
-            let loss = second.evaluate(&self.input);
+            let loss = second.evaluate_loss(&self.input);
             if loss < min_loss {
                 min_loss = loss;
             }
